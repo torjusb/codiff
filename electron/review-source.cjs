@@ -40,10 +40,20 @@ const toReviewUrl = (value) => {
   }
 };
 
-/** @param {URL} url */
-const isGitHubHost = (url) => {
-  const hostname = url.hostname.toLowerCase();
-  return hostname === 'github.com' || hostname === 'www.github.com';
+/**
+ * GitHub Enterprise Cloud tenants live on `<tenant>.ghe.com`. Enterprise Server runs on arbitrary
+ * domains that cannot be told apart from GitLab by hostname, so it is not recognized here.
+ *
+ * @param {string} hostname
+ * @returns {string | null} The canonical GitHub host, or `null` when `hostname` is not GitHub.
+ */
+const getGitHubHost = (hostname) => {
+  const host = hostname.toLowerCase();
+  return host === 'github.com' || host === 'www.github.com'
+    ? 'github.com'
+    : /^[a-z\d-]+\.ghe\.com$/.test(host)
+      ? host
+      : null;
 };
 
 /** @param {string} value */
@@ -53,17 +63,18 @@ const parseReviewUrl = (value) => {
     return null;
   }
 
-  const github = isGitHubHost(url) ? url.pathname.match(gitHubPullRequestPattern) : null;
+  const gitHubHost = getGitHubHost(url.hostname);
+  const github = gitHubHost ? url.pathname.match(gitHubPullRequestPattern) : null;
   const repo = github ? stripGitSuffix(github[2]) : '';
-  if (github && repo) {
+  if (gitHubHost && github && repo) {
     return {
-      host: 'github.com',
+      host: gitHubHost,
       number: Number(github[3]),
       owner: github[1],
       projectPath: `${github[1]}/${repo}`,
       provider: /** @type {const} */ ('github'),
       repo,
-      url: `https://github.com/${github[1]}/${repo}/pull/${github[3]}`,
+      url: `https://${gitHubHost}/${github[1]}/${repo}/pull/${github[3]}`,
     };
   }
 
@@ -90,13 +101,12 @@ const parseRemoteUrl = (value) => {
   const scp = trimmed.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
   if (scp && !trimmed.includes('://') && !/^[A-Za-z]:/.test(trimmed)) {
     const projectPath = scp[2].replaceAll(/^\/+|\.git$/gi, '');
+    const gitHubHost = getGitHubHost(scp[1]);
     return projectPath
       ? {
-          host: scp[1].toLowerCase(),
+          host: gitHubHost ?? scp[1].toLowerCase(),
           projectPath,
-          provider: /** @type {ReviewProvider} */ (
-            scp[1].toLowerCase() === 'github.com' ? 'github' : 'gitlab'
-          ),
+          provider: /** @type {ReviewProvider} */ (gitHubHost ? 'github' : 'gitlab'),
         }
       : null;
   }
@@ -104,16 +114,15 @@ const parseRemoteUrl = (value) => {
   try {
     const url = new URL(trimmed);
     const projectPath = url.pathname.replaceAll(/^\/+|\.git$/gi, '');
+    const gitHubHost = getGitHubHost(url.hostname);
     return projectPath
       ? {
           // A custom SSH port (`ssh://git@host:2222/...`) is transport detail, not part
           // of the instance identifier, and glab's `--hostname` rejects `host:port` —
           // strip it. An explicit port on `https://` remotes stays: it identifies the instance.
-          host: (url.protocol === 'ssh:' ? url.hostname : url.host).toLowerCase(),
+          host: gitHubHost ?? (url.protocol === 'ssh:' ? url.hostname : url.host).toLowerCase(),
           projectPath,
-          provider: /** @type {ReviewProvider} */ (
-            url.hostname.toLowerCase() === 'github.com' ? 'github' : 'gitlab'
-          ),
+          provider: /** @type {ReviewProvider} */ (gitHubHost ? 'github' : 'gitlab'),
         }
       : null;
   } catch {
@@ -175,11 +184,12 @@ const resolveReviewUrl = (repositoryPath, number, provider) => {
   }
 
   return remote.provider === 'github'
-    ? `https://github.com/${remote.projectPath}/pull/${number}`
+    ? `https://${remote.host}/${remote.projectPath}/pull/${number}`
     : `https://${remote.host}/${remote.projectPath}/-/merge_requests/${number}`;
 };
 
 module.exports = {
+  getGitHubHost,
   parseRemoteUrl,
   parseReviewRemotes,
   parseReviewUrl,

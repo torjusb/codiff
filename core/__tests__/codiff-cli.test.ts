@@ -139,6 +139,15 @@ test('parseArguments canonicalizes review URLs copied from a review tab', () => 
   }
 
   for (const value of [
+    'https://acme.ghe.com/owner/repo/pull/5/files',
+    'acme.ghe.com/owner/repo/pull/5',
+  ]) {
+    expect(parseArguments([value])).toMatchObject({
+      pullRequestUrl: 'https://acme.ghe.com/owner/repo/pull/5',
+    });
+  }
+
+  for (const value of [
     'https://gitlab.example.com/group/subgroup/project/-/merge_requests/23/diffs#note_991',
     'https://gitlab.example.com/group/subgroup/project/merge_requests/23',
   ]) {
@@ -433,6 +442,23 @@ test('resolvePullRequestUrl builds GitHub PR URLs from the origin remote', async
 
   expect(resolvePullRequestUrl(repositoryPath, 75)).toBe(
     'https://github.com/nkzw-tech/codiff/pull/75',
+  );
+});
+
+test('resolvePullRequestUrl builds PR URLs on the GitHub Enterprise Cloud remote host', async () => {
+  await using directory = await createTemporaryDirectory('codiff-cli-');
+  const repositoryPath = directory.path;
+
+  await git(repositoryPath, ['init']);
+  await git(repositoryPath, ['remote', 'add', 'origin', 'git@acme.ghe.com:owner/repo.git']);
+  await git(repositoryPath, ['remote', 'add', 'upstream', 'https://acme.ghe.com/other/repo.git']);
+
+  expect(resolvePullRequestUrl(repositoryPath, 75, 'github')).toBe(
+    'https://acme.ghe.com/owner/repo/pull/75',
+  );
+  await git(repositoryPath, ['remote', 'remove', 'origin']);
+  expect(resolvePullRequestUrl(repositoryPath, 75, 'github')).toBe(
+    'https://acme.ghe.com/other/repo/pull/75',
   );
 });
 

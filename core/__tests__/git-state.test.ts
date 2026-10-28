@@ -87,6 +87,7 @@ type GitStateModule = {
   normalizeGitHubReviewComment: (comment: Record<string, unknown>) => unknown;
   normalizePullRequestComment: (comment: Record<string, unknown>) => Record<string, unknown>;
   parseGitHubPullRequestUrl: (value: string) => {
+    host: string;
     number: number;
     owner: string;
     repo: string;
@@ -190,6 +191,7 @@ const commitAll = async (repo: string, message: string) => {
 const withFakeGitHub = async (
   mode: 'diagnosis-fails' | 'no-pending-review' | 'pending-review' | 'success',
   callback: (repo: string, readCalls: () => ReadonlyArray<ReadonlyArray<string>>) => Promise<void>,
+  remoteUrl = 'https://github.com/octo/example.git',
 ) => {
   await using repoDirectory = await createTemporaryDirectory('codiff-git-state-');
   const repo = await realpath(repoDirectory.path);
@@ -198,7 +200,7 @@ const withFakeGitHub = async (
   const fakeGh = join(fakeBinDirectory.path, 'gh');
   const callsPath = join(fakeBinDirectory.path, 'calls.jsonl');
 
-  await git(repo, ['remote', 'add', 'origin', 'https://github.com/octo/example.git']);
+  await git(repo, ['remote', 'add', 'origin', remoteUrl]);
   await writeFile(
     fakeGh,
     `#!/usr/bin/env node
@@ -523,6 +525,7 @@ test('readWorkingTreeState omits unmerged diagnostics when our conflict version 
 
 test('parseGitHubPullRequestUrl reads canonical pull request URLs', () => {
   expect(parseGitHubPullRequestUrl('https://github.com/nkzw-tech/codiff/pull/3')).toEqual({
+    host: 'github.com',
     number: 3,
     owner: 'nkzw-tech',
     repo: 'codiff',
@@ -539,12 +542,40 @@ test('parseGitHubPullRequestUrl canonicalizes URLs copied from a review tab', ()
     'github.com/nkzw-tech/codiff/pull/3',
   ]) {
     expect(parseGitHubPullRequestUrl(value)).toEqual({
+      host: 'github.com',
       number: 3,
       owner: 'nkzw-tech',
       repo: 'codiff',
       url: 'https://github.com/nkzw-tech/codiff/pull/3',
     });
   }
+});
+
+test('parseGitHubPullRequestUrl keeps the GitHub Enterprise Cloud host', () => {
+  for (const value of [
+    'https://acme.ghe.com/owner/repo/pull/5',
+    'https://acme.ghe.com/owner/repo/pull/5/files',
+    'acme.ghe.com/owner/repo/pull/5',
+  ]) {
+    expect(parseGitHubPullRequestUrl(value)).toEqual({
+      host: 'acme.ghe.com',
+      number: 5,
+      owner: 'owner',
+      repo: 'repo',
+      url: 'https://acme.ghe.com/owner/repo/pull/5',
+    });
+  }
+
+  expect(
+    createPullRequestSource(
+      parseGitHubPullRequestUrl('https://acme.ghe.com/owner/repo/pull/5'),
+      {},
+    ),
+  ).toMatchObject({
+    host: 'acme.ghe.com',
+    provider: 'github',
+    url: 'https://acme.ghe.com/owner/repo/pull/5',
+  });
 });
 
 test('parseGitHubPullRequestUrl rejects values that are not GitHub pull requests', () => {
@@ -600,6 +631,7 @@ test('createPullRequestHistoryFetchRefspecs fetches PR and base refs into Codiff
 });
 
 const pullRequestFixture = {
+  host: 'github.com',
   number: 7,
   owner: 'nkzw-tech',
   repo: 'codiff',
@@ -1077,6 +1109,34 @@ test('successful pull request comments skip pending review diagnosis', async () 
       ),
     ).toBe(false);
   });
+});
+
+test('GitHub Enterprise Cloud pull request comments target the pull request host', async () => {
+  await withFakeGitHub(
+    'success',
+    async (repo, readCalls) => {
+      await expect(
+        submitPullRequestComment(repo, {
+          ...pullRequestCommentRequest,
+          source: {
+            ...pullRequestCommentRequest.source,
+            url: 'https://acme.ghe.com/octo/example/pull/118/files',
+          },
+        }),
+      ).resolves.toMatchObject({ id: 'github:1' });
+
+      expect(
+        readCalls().map((args) => [
+          args.slice(0, 3),
+          args.find((argument) => argument.startsWith('repos/')),
+        ]),
+      ).toEqual([
+        [['api', '--hostname', 'acme.ghe.com'], 'repos/octo/example/pulls/118'],
+        [['api', '--hostname', 'acme.ghe.com'], 'repos/octo/example/pulls/118/comments'],
+      ]);
+    },
+    'git@acme.ghe.com:octo/example.git',
+  );
 });
 
 test('parseStatus preserves staged and unstaged flags on the same file', () => {

@@ -104,11 +104,7 @@ const listGitHubRequests = async (repoRoot, project, { cursor, filter, search, s
     let entry;
     try {
       entry = JSON.parse(
-        await ghApi(repoRoot, [
-          '--hostname',
-          project.host,
-          `repos/${project.path}/pulls/${number}`,
-        ]),
+        await ghApi(repoRoot, project.host, [`repos/${project.path}/pulls/${number}`]),
       );
     } catch (error) {
       if (error instanceof Error && /\(HTTP 404\)/.test(error.message)) {
@@ -178,7 +174,7 @@ const listGitHubRequests = async (repoRoot, project, { cursor, filter, search, s
       };
 
   const { data } = JSON.parse(
-    await ghApi(repoRoot, ['graphql', '--hostname', project.host, '--input', '-'], payload),
+    await ghApi(repoRoot, project.host, ['graphql', '--input', '-'], payload),
   );
   const connection = search ? data.search : data.repository.pullRequests;
   /** @type {Array<ReviewRequestSummary>} */

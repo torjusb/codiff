@@ -18,7 +18,7 @@ const {
   validateRepositoryPath,
 } = require('./common.cjs');
 const { readGitFiles } = require('./git-files.cjs');
-const { parseReviewUrl } = require('../review-source.cjs');
+const { getGitHubHost, parseReviewUrl } = require('../review-source.cjs');
 
 /**
  * @typedef {import('../../core/types.ts').ChangedFile} ChangedFile
@@ -30,9 +30,10 @@ const { parseReviewUrl } = require('../review-source.cjs');
  * @typedef {import('../../core/types.ts').SubmitPullRequestCommentRequest} SubmitPullRequestCommentRequest
  * @typedef {import('../../core/types.ts').SubmitPullRequestReviewRequest} SubmitPullRequestReviewRequest
  * @typedef {{owner: string; repo: string}} GitHubRepositoryReference
+ * @typedef {GitHubRepositoryReference & {host: string}} GitHubHostedRepository
  * @typedef {{name: string; url: string}} LocalGitRemote
  * @typedef {{full_name?: string; name?: string; owner?: {login?: string}}} GitHubRepositoryMetadata
- * @typedef {{number: number; owner: string; repo: string; url: string}} PullRequestReference
+ * @typedef {{host: string; number: number; owner: string; repo: string; url: string}} PullRequestReference
  * @typedef {{direction: 'fetch' | 'push'; name: string; owner: string; repo: string}} GitHubRemote
  * @typedef {{filename: string; patch?: string; previous_filename?: string; status: string}} GitHubPullRequestFile
  * @typedef {{base?: {ref?: string; repo?: GitHubRepositoryMetadata | null; sha?: string}; body?: string | null; body_html?: string | null; head?: {ref?: string; repo?: GitHubRepositoryMetadata | null; sha?: string}; node_id?: string; title?: string; user?: {avatar_url?: string; html_url?: string; login?: string}}} GitHubPullRequestMetadata
@@ -99,6 +100,7 @@ const parseGitHubPullRequestUrl = (value) => {
   }
 
   return {
+    host: parsed.host,
     number: parsed.number,
     owner: parsed.owner,
     repo: parsed.repo,
@@ -106,26 +108,32 @@ const parseGitHubPullRequestUrl = (value) => {
   };
 };
 
-/** @param {string} value @returns {GitHubRepositoryReference | null} */
+/** @param {string} value @returns {GitHubHostedRepository | null} */
 const parseGitHubRemoteUrl = (value) => {
   const trimmed = value.trim();
-  const sshMatch = trimmed.match(/^(?:git|org-\d+)@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i);
+  const sshMatch = trimmed.match(/^(?:git|org-\d+)@([^:/\s]+):([^/]+)\/(.+?)(?:\.git)?$/i);
   if (sshMatch) {
-    return {
-      owner: sshMatch[1],
-      repo: sshMatch[2].replace(/\.git$/i, ''),
-    };
+    const host = getGitHubHost(sshMatch[1]);
+    return host
+      ? {
+          host,
+          owner: sshMatch[2],
+          repo: sshMatch[3].replace(/\.git$/i, ''),
+        }
+      : null;
   }
 
   try {
     const url = new URL(trimmed);
-    if (url.hostname.toLowerCase() !== 'github.com') {
+    const host = getGitHubHost(url.hostname);
+    if (!host) {
       return null;
     }
 
     const match = url.pathname.match(/^\/([^/]+)\/(.+?)(?:\.git)?$/);
     return match
       ? {
+          host,
           owner: match[1],
           repo: match[2].replace(/\.git$/i, ''),
         }
@@ -173,7 +181,7 @@ const readLocalGitRemotes = async (repoRoot) => {
   const remotes = await Promise.all(
     names.map(async (name) => {
       // Read the configured URL instead of `git remote -v`, which applies
-      // `insteadOf` rewrites and can hide the original github.com host.
+      // `insteadOf` rewrites and can hide the original GitHub host.
       const url = (await gitOrEmpty(repoRoot, ['config', '--get', `remote.${name}.url`]))
         .split('\n')[0]
         .trim();
@@ -214,7 +222,8 @@ const selectPullRequestRemote = async (repoRoot, pullRequest, expectedHeadSha) =
     .filter(
       ({ repository }) =>
         repository?.owner.toLowerCase() === pullRequest.owner.toLowerCase() &&
-        repository.repo.toLowerCase() === pullRequest.repo.toLowerCase(),
+        repository.repo.toLowerCase() === pullRequest.repo.toLowerCase() &&
+        repository.host === pullRequest.host,
     )[0]?.remote;
 
   if (remote) {
@@ -274,14 +283,15 @@ const fetchPullRequestHistoryRefs = (repoRoot, remote, pullRequest, metadata) =>
  * failures because a missing file is a valid answer for content lookups.
  *
  * @param {string} repoRoot
+ * @param {string} host
  * @param {ReadonlyArray<string>} args
  * @param {unknown} [input]
  * @returns {Promise<{code: number | null; stderr: string; stdout: Buffer}>}
  */
-const runGhApi = async (repoRoot, args, input) => {
+const runGhApi = async (repoRoot, host, args, input) => {
   const environment = await getCommandEnvironment();
   return new Promise((resolve, reject) => {
-    const child = spawn(getGhCommand(), ['api', ...args], {
+    const child = spawn(getGhCommand(), ['api', '--hostname', host, ...args], {
       cwd: repoRoot,
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -308,12 +318,13 @@ const runGhApi = async (repoRoot, args, input) => {
 
 /**
  * @param {string} repoRoot
+ * @param {string} host
  * @param {ReadonlyArray<string>} args
  * @param {unknown} [input]
  * @returns {Promise<string>}
  */
-const ghApi = async (repoRoot, args, input) => {
-  const { code, stderr, stdout } = await runGhApi(repoRoot, args, input);
+const ghApi = async (repoRoot, host, args, input) => {
+  const { code, stderr, stdout } = await runGhApi(repoRoot, host, args, input);
   if (code === 0) {
     return stdout.toString('utf8');
   }
@@ -323,11 +334,12 @@ const ghApi = async (repoRoot, args, input) => {
 
 /**
  * @param {string} repoRoot
+ * @param {string} host
  * @param {ReadonlyArray<string>} args
  * @returns {Promise<Buffer | undefined>}
  */
-const ghApiBuffer = async (repoRoot, args) => {
-  const { code, stderr, stdout } = await runGhApi(repoRoot, args);
+const ghApiBuffer = async (repoRoot, host, args) => {
+  const { code, stderr, stdout } = await runGhApi(repoRoot, host, args);
   if (code === 0) {
     return stdout;
   }
@@ -342,7 +354,7 @@ const ghApiBuffer = async (repoRoot, args) => {
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest @returns {Promise<GitHubPullRequestMetadata>} */
 const readPullRequestMetadata = async (repoRoot, pullRequest) =>
   JSON.parse(
-    await ghApi(repoRoot, [
+    await ghApi(repoRoot, pullRequest.host, [
       '-H',
       'Accept: application/vnd.github.full+json',
       `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}`,
@@ -352,7 +364,7 @@ const readPullRequestMetadata = async (repoRoot, pullRequest) =>
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest @returns {Promise<Array<GitHubPullRequestFile>>} */
 const readPullRequestFiles = async (repoRoot, pullRequest) => {
   const pages = JSON.parse(
-    await ghApi(repoRoot, [
+    await ghApi(repoRoot, pullRequest.host, [
       '--paginate',
       '--slurp',
       `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/files?per_page=100`,
@@ -382,7 +394,7 @@ const readPullRequestViewedFiles = async (repoRoot, pullRequest) => {
   let headSha;
   do {
     const response = JSON.parse(
-      await ghApi(repoRoot, [
+      await ghApi(repoRoot, pullRequest.host, [
         'graphql',
         '-f',
         `query=${VIEWED_FILES_QUERY}`,
@@ -441,6 +453,7 @@ const normalizeGitHubRepositoryReference = (repository) => {
 const getPullRequestHeadImageSource = (pullRequest, metadata) => {
   const repository = normalizeGitHubRepositoryReference(metadata.head?.repo);
   return {
+    host: pullRequest.host,
     owner: repository?.owner ?? pullRequest.owner,
     ref: repository
       ? (metadata.head?.sha ?? metadata.head?.ref ?? 'HEAD')
@@ -451,7 +464,7 @@ const getPullRequestHeadImageSource = (pullRequest, metadata) => {
 
 /**
  * @param {string} repoRoot
- * @param {GitHubRepositoryReference} repository
+ * @param {GitHubHostedRepository} repository
  * @param {string} ref
  * @param {string} path
  */
@@ -460,7 +473,7 @@ const readGitHubImageFile = async (repoRoot, repository, ref, path) => {
     throw new Error('Unsupported image file type.');
   }
 
-  const buffer = await ghApiBuffer(repoRoot, [
+  const buffer = await ghApiBuffer(repoRoot, repository.host, [
     '-H',
     'Accept: application/vnd.github.raw',
     `repos/${repository.owner}/${repository.repo}/contents/${encodeGitHubContentPath(
@@ -481,7 +494,7 @@ const readGitHubImageFile = async (repoRoot, repository, ref, path) => {
 
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest */
 const readPullRequestDiff = async (repoRoot, pullRequest) =>
-  ghApi(repoRoot, [
+  ghApi(repoRoot, pullRequest.host, [
     '-H',
     'Accept: application/vnd.github.v3.diff',
     `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}`,
@@ -584,7 +597,7 @@ const readResolvedReviewCommentIds = async (repoRoot, pullRequest) => {
     let hasNextPage = true;
     while (hasNextPage) {
       const response = JSON.parse(
-        await ghApi(repoRoot, [
+        await ghApi(repoRoot, pullRequest.host, [
           'graphql',
           '-f',
           `query=${RESOLVED_REVIEW_THREADS_QUERY}`,
@@ -616,7 +629,7 @@ const readResolvedReviewCommentIds = async (repoRoot, pullRequest) => {
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest */
 const readPullRequestComments = async (repoRoot, pullRequest) => {
   const [pages, resolvedCommentIds] = await Promise.all([
-    ghApi(repoRoot, [
+    ghApi(repoRoot, pullRequest.host, [
       '--paginate',
       '--slurp',
       `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/comments?per_page=100`,
@@ -629,7 +642,7 @@ const readPullRequestComments = async (repoRoot, pullRequest) => {
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest @returns {Promise<Array<GitHubCommit>>} */
 const readPullRequestCommits = async (repoRoot, pullRequest) => {
   const pages = JSON.parse(
-    await ghApi(repoRoot, [
+    await ghApi(repoRoot, pullRequest.host, [
       '--paginate',
       '--slurp',
       `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/commits?per_page=100`,
@@ -644,7 +657,7 @@ const readRepositoryCommits = async (repoRoot, pullRequest, sha, limit) => {
   const commits = [];
   for (let page = 1; commits.length < limit; page += 1) {
     const pageCommits = JSON.parse(
-      await ghApi(repoRoot, [
+      await ghApi(repoRoot, pullRequest.host, [
         `repos/${pullRequest.owner}/${pullRequest.repo}/commits?sha=${encodeURIComponent(
           sha,
         )}&per_page=${Math.min(limit - commits.length, 100)}&page=${page}`,
@@ -793,7 +806,7 @@ const createPullRequestSource = (pullRequest, metadata) => {
       : {}),
     ...(description ? { description } : {}),
     headSha: metadata.head?.sha,
-    host: 'github.com',
+    host: pullRequest.host,
     number: pullRequest.number,
     owner: pullRequest.owner,
     projectPath: `${pullRequest.owner}/${pullRequest.repo}`,
@@ -1115,7 +1128,7 @@ const isGitHubValidationError = (error) =>
 /** @param {string} repoRoot @param {PullRequestReference} pullRequest */
 const hasPendingPullRequestReview = async (repoRoot, pullRequest) => {
   const pages = JSON.parse(
-    await ghApi(repoRoot, [
+    await ghApi(repoRoot, pullRequest.host, [
       '--paginate',
       '--slurp',
       `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/reviews?per_page=100`,
@@ -1137,6 +1150,7 @@ const submitPullRequestComment = async (launchPath, request) => {
 
   const rawComment = await ghApi(
     repoRoot,
+    pullRequest.host,
     [
       '-X',
       'POST',
@@ -1172,6 +1186,7 @@ const submitPullRequestReview = async (launchPath, request) => {
 
   await ghApi(
     repoRoot,
+    pullRequest.host,
     [
       '-X',
       'POST',
@@ -1202,7 +1217,7 @@ const setPullRequestFileViewed = async (launchPath, request) => {
   const mutation = request.viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed';
   const inputType = request.viewed ? 'MarkFileAsViewedInput' : 'UnmarkFileAsViewedInput';
   const response = JSON.parse(
-    await ghApi(repoRoot, ['graphql', '--input', '-'], {
+    await ghApi(repoRoot, pullRequest.host, ['graphql', '--input', '-'], {
       query: `mutation($input: ${inputType}!) { ${mutation}(input: $input) { clientMutationId } }`,
       variables: { input: { path: request.path, pullRequestId: metadata.node_id } },
     }),

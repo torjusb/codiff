@@ -14,6 +14,7 @@ const { selectPullRequestRemote } = require('../git-state/pull-request.cjs') as 
   selectPullRequestRemote: (
     repoRoot: string,
     pullRequest: {
+      host: string;
       number: number;
       owner: string;
       repo: string;
@@ -30,6 +31,7 @@ const { selectPullRequestRemote } = require('../git-state/pull-request.cjs') as 
 
 const execFileAsync = promisify(execFile);
 const pullRequest = {
+  host: 'github.com',
   number: 42,
   owner: 'acme',
   repo: 'widgets',
@@ -76,6 +78,37 @@ test('matches GitHub organization SSH certificate remotes without probing them',
       owner: 'acme',
       repo: 'widgets',
     });
+  } finally {
+    await removeGitTestDirectory(directory);
+  }
+});
+
+test('matches GitHub Enterprise Cloud remotes only on the pull request host', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codiff-pull-request-remote-'));
+  const repo = join(directory, 'repo');
+  const gheComPullRequest = {
+    ...pullRequest,
+    host: 'acme.ghe.com',
+    url: 'https://acme.ghe.com/acme/widgets/pull/42',
+  };
+
+  try {
+    await createRepository(repo);
+    await git(repo, ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git']);
+    await git(repo, ['remote', 'add', 'enterprise', 'git@acme.ghe.com:acme/widgets.git']);
+    await git(repo, ['remote', 'add', 'mirror', 'https://acme.ghe.com/acme/widgets.git']);
+
+    await expect(selectPullRequestRemote(repo, gheComPullRequest)).resolves.toMatchObject({
+      name: 'enterprise',
+    });
+    await git(repo, ['remote', 'remove', 'enterprise']);
+    await expect(selectPullRequestRemote(repo, gheComPullRequest)).resolves.toMatchObject({
+      name: 'mirror',
+    });
+    await git(repo, ['remote', 'remove', 'mirror']);
+    await expect(selectPullRequestRemote(repo, gheComPullRequest)).rejects.toThrow(
+      'Pull request acme/widgets does not match a GitHub remote in this repository.',
+    );
   } finally {
     await removeGitTestDirectory(directory);
   }

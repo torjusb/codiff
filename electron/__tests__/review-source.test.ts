@@ -69,6 +69,25 @@ test('parseReviewUrl accepts GitHub URLs pasted without a scheme or with `www`',
   }
 });
 
+test('parseReviewUrl reads GitHub Enterprise Cloud pull request URLs on their own host', () => {
+  for (const value of [
+    'https://acme.ghe.com/owner/repo/pull/5',
+    'https://acme.ghe.com/owner/repo/pull/5/files',
+    'https://ACME.ghe.com/owner/repo/pull/5/changes#r2231',
+    'acme.ghe.com/owner/repo/pull/5',
+  ]) {
+    expect(parseReviewUrl(value)).toEqual({
+      host: 'acme.ghe.com',
+      number: 5,
+      owner: 'owner',
+      projectPath: 'owner/repo',
+      provider: 'github',
+      repo: 'repo',
+      url: 'https://acme.ghe.com/owner/repo/pull/5',
+    });
+  }
+});
+
 test('parseReviewUrl strips a `.git` suffix from GitHub repositories', () => {
   expect(parseReviewUrl('https://github.com/nkzw-tech/codiff.git/pull/1728')).toMatchObject({
     projectPath: 'nkzw-tech/codiff',
@@ -129,6 +148,8 @@ test('parseReviewUrl rejects values that are not review URLs', () => {
     'https://github.com/nkzw-tech/codiff/pull/abc',
     'https://github.com/nkzw-tech/codiff/issues/1728',
     'https://example.com/nkzw-tech/codiff/pull/1728',
+    'https://ghe.com/nkzw-tech/codiff/pull/1728',
+    'https://acme.ghe.com.example.com/nkzw-tech/codiff/pull/1728',
     'some/local/path/merge_requests/23',
   ]) {
     expect(parseReviewUrl(value)).toBe(null);
@@ -162,4 +183,18 @@ test('parseRemoteUrl reads scp-style and GitHub remotes', () => {
     projectPath: 'nkzw-tech/codiff',
     provider: 'github',
   });
+});
+
+test('parseRemoteUrl classifies GitHub Enterprise Cloud remotes as GitHub', () => {
+  for (const value of [
+    'git@acme.ghe.com:owner/repo.git',
+    'https://acme.ghe.com/owner/repo.git',
+    'ssh://git@acme.ghe.com/owner/repo.git',
+  ]) {
+    expect(parseRemoteUrl(value)).toEqual({
+      host: 'acme.ghe.com',
+      projectPath: 'owner/repo',
+      provider: 'github',
+    });
+  }
 });
