@@ -95,7 +95,7 @@ test('matches GitHub Enterprise Cloud remotes only on the pull request host', as
   try {
     await createRepository(repo);
     await git(repo, ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git']);
-    await git(repo, ['remote', 'add', 'enterprise', 'git@acme.ghe.com:acme/widgets.git']);
+    await git(repo, ['remote', 'add', 'enterprise', 'acme@acme.ghe.com:acme/widgets.git']);
     await git(repo, ['remote', 'add', 'mirror', 'https://acme.ghe.com/acme/widgets.git']);
 
     await expect(selectPullRequestRemote(repo, gheComPullRequest)).resolves.toMatchObject({

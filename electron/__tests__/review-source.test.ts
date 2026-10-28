@@ -188,6 +188,7 @@ test('parseRemoteUrl reads scp-style and GitHub remotes', () => {
 test('parseRemoteUrl classifies GitHub Enterprise Cloud remotes as GitHub', () => {
   for (const value of [
     'git@acme.ghe.com:owner/repo.git',
+    'acme@acme.ghe.com:owner/repo.git',
     'https://acme.ghe.com/owner/repo.git',
     'ssh://git@acme.ghe.com/owner/repo.git',
   ]) {

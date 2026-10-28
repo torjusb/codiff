@@ -111,7 +111,7 @@ const parseGitHubPullRequestUrl = (value) => {
 /** @param {string} value @returns {GitHubHostedRepository | null} */
 const parseGitHubRemoteUrl = (value) => {
   const trimmed = value.trim();
-  const sshMatch = trimmed.match(/^(?:git|org-\d+)@([^:/\s]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+  const sshMatch = trimmed.match(/^(?:[^@\s/:]+@)?([^:/\s]+):([^/]+)\/(.+?)(?:\.git)?$/i);
   if (sshMatch) {
     const host = getGitHubHost(sshMatch[1]);
     return host
